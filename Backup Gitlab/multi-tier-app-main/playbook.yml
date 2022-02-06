@@ -1,0 +1,178 @@
+---
+
+- name: Play to setup mysql server
+  hosts: appdbs
+  vars:
+    mysql_info:
+      user: devops
+      privilege: "*.*:ALL,GRANT"
+      database: userdb
+      password: redhat
+      backupfile: userdb.backup
+    mysql_packages:
+      - mariadb
+      - mariadb-server
+      - python3-PyMySQL
+    mysql_services: 
+      - mariadb
+  tasks:
+    - include_tasks: firewall_tasks.yml
+      vars:
+        firewall_services:
+          - mysql
+    - debug: 
+        msg: "Start Mysql server setup"
+    - name: Install mysql
+      yum: 
+        name: "{{ __package }}"
+        state: latest
+      loop: "{{ mysql_packages }}"
+      loop_control:
+        loop_var: __package
+    - name: Start mysql 
+      service:
+        name: "{{ __service }}"
+        enabled: true
+        state: started
+      loop: "{{ mysql_services }}"
+      loop_control:
+        loop_var: __service
+    - name: Set user's privileges
+      mysql_user:
+        name: "{{ mysql_info.user }}"
+        priv: "{{ mysql_info.privilege }}"
+        append_privs: yes
+        password: "{{ mysql_info.password }}"
+        host: '%'
+    - name: Copy database backup
+      copy:
+        src: "{{ mysql_info.backupfile }}"
+        dest: /tmp
+    - name: Restore database from backup
+      mysql_db:
+        name: "{{  mysql_info.database }}"
+        state: import
+        target: "/tmp/{{ mysql_info.backupfile }}"
+    - debug: 
+        msg: "Finished Mysql server setup"
+ 
+- name: Play to setup apache servers
+  hosts: apps
+  vars:
+    apache_packages: 
+      - httpd
+      - php
+      - php-mysqlnd
+    apache_services: 
+      - httpd
+    mysql_info:
+      user: devops
+      database: userdb
+      password: redhat
+  handlers:
+    - name: restart_apache
+      service:
+        name: "{{ __service }}"
+        state: restarted
+      loop: "{{ apache_services }}"
+      loop_control:
+        loop_var: __service
+  tasks:
+    - include_tasks: firewall_tasks.yml
+      vars:
+        firewall_services:
+          - http
+        firewall_tcp_ports:
+          - 8080
+
+    - debug: 
+        msg: "Start Apache server setup"
+    - name: Install apache server
+      yum:
+        name: "{{ __package }}"
+        state: latest
+      loop: "{{ apache_packages }}"
+      loop_control:
+        loop_var: __package
+    - name: Change apache port
+      replace:
+        path: /etc/httpd/conf/httpd.conf
+        regexp: '^Listen.*$'
+        replace: 'Listen 8080'
+    - name: Copy image directory
+      copy:
+        src: images
+        dest: /var/www/html/
+    - name: Copy php program template
+      template:
+        src: index.php.j2
+        dest: /var/www/html/index.php
+      notify:
+        - restart_apache
+    - name: Start apache server
+      service:
+        name: "{{ __service }}"
+        state: restarted
+      loop: "{{ apache_services }}"
+      loop_control:
+        loop_var: __service
+    - name: enable selinux boolean
+      seboolean:
+        name: "{{ item }}"
+        state: yes
+        persistent: yes
+      loop:
+        - httpd_can_network_connect_db
+        - httpd_can_network_connect    
+    - debug: 
+        msg: "Finished Apache server setup"
+
+- name: Play to setup Haproxy
+  hosts: frontends
+  vars:
+    haproxy_packages:
+      - haproxy
+    haproxy_services: 
+      - haproxy
+  handlers:
+    - name: restart_haproxy
+      service:
+        name: "{{ __service }}"
+        state: restarted
+      loop: "{{ haproxy_services }}"
+      loop_control:
+        loop_var: __service
+  tasks:
+    - include_tasks: firewall_tasks.yml
+      vars:
+        firewall_services:
+          - http
+        firewall_tcp_ports:
+          - 5000
+    - debug: 
+        msg: "Start HAproxy server setup"
+    - name: Install HAproxy
+      yum: 
+        name: "{{ __package }}"
+        state: latest
+      loop: "{{ haproxy_packages }}"
+      loop_control:
+        loop_var: __package
+    - name: Copy HAproxy template
+      template:
+        src: haproxy.cfg.j2
+        dest: /etc/haproxy/haproxy.cfg
+      notify:
+        - restart_haproxy
+    - name: Start HAproxy
+      service:
+        name: "{{ __service }}"
+        state: started
+        enabled: yes
+      loop: "{{ haproxy_services }}"
+      loop_control:
+        loop_var: __service
+    - debug: 
+        msg: "Finished HAproxy server setup"
+
+...
